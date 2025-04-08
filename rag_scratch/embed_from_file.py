@@ -39,36 +39,45 @@ class EmbeddingFromFile:
         self.device = device
 
     def markeddown_text(self, page_chunks=True, show_progress=True):
+        self.doc_md_texts = []  # list of tuples: (doc_name, md_list)
         if isinstance(self.pdf_path, list):
-            self.md_text = []
             for pdf in self.pdf_path:
-                self.md_text += pymupdf4llm.to_markdown(
+                doc_name = os.path.basename(pdf)
+                md = pymupdf4llm.to_markdown(
                     doc=pdf, page_chunks=page_chunks, show_progress=show_progress)
+                for item in md:
+                    item["document_name"] = doc_name
+                self.doc_md_texts.append((doc_name, md))
         else:
-            self.md_text = pymupdf4llm.to_markdown(
+            doc_name = os.path.basename(self.pdf_path)
+            md = pymupdf4llm.to_markdown(
                 doc=self.pdf_path, page_chunks=page_chunks, show_progress=show_progress)
-        return self.md_text
+            for item in md:
+                item["document_name"] = doc_name
+            self.doc_md_texts.append((doc_name, md))
+        return self.doc_md_texts
 
-    def page_and_text(self, md_text, first_page):
-        self.first_page = first_page
+    def page_and_text(self, doc_md_texts, first_page=0):
         self.pages_and_texts = []
         nlp = English()
         nlp.add_pipe("sentencizer")
 
-        for val in tqdm(md_text[self.first_page:], desc="Processing Pages"):
-            page_num = val['metadata']['page']
-            content = val['text'].replace("\n", " ").replace("#", "").replace("*", "").strip()
-            sentences = [str(sent) for sent in list(nlp(content).sents)]
+        for doc_name, md_text in doc_md_texts:
+            for i, val in enumerate(tqdm(md_text[first_page:], desc=f"Processing {doc_name}")):
+                page_num = i + 1  # Start from 1 for each document
+                content = val['text'].replace("\n", " ").replace("#", "").replace("*", "").strip()
+                sentences = [str(sent) for sent in list(nlp(content).sents)]
 
-            self.pages_and_texts.append({
-                "page_num": page_num-self.first_page,
-                "page_character_count": len(content),
-                "page_word_count": len(content.split()),
-                "page_sentence_count": len(sentences),
-                "page_token_count": int(len(content) / 4),
-                "sentence": sentences,
-                "content": content
-            })
+                self.pages_and_texts.append({
+                    "document_name": doc_name,
+                    "page_num": page_num,
+                    "page_character_count": len(content),
+                    "page_word_count": len(content.split()),
+                    "page_sentence_count": len(sentences),
+                    "page_token_count": int(len(content) / 4),
+                    "sentence": sentences,
+                    "content": content
+                })
         return self.pages_and_texts
 
     def create_chunk(self, pages_and_texts, slice_size=8):
@@ -81,6 +90,7 @@ class EmbeddingFromFile:
 
             for sentence_chunk in sentence_chunks:
                 chunk_dict = {
+                    "document_name": item["document_name"],
                     "page_number": item["page_num"],
                     "sentence_chunk": re.sub(r'\.([A-Z])', r'. \1', " ".join(sentence_chunk).strip()),
                 }
@@ -99,7 +109,6 @@ class EmbeddingFromFile:
         return self.pages_and_chunks_over_min_token_len
 
     def sentence_embeddings(self, pages_and_chunks_over_min_token_len, model="all-mpnet-base-v2"):
-        
         self.embedding_model = SentenceTransformer(model_name_or_path=model, device=self.device)
 
         for item in tqdm(pages_and_chunks_over_min_token_len, desc="Generating Embeddings"):
